@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/Md2Pdf.Core/Md2Pdf.Core.csproj" />
+  <Project Path="src/Md2Pdf.Cli/Md2Pdf.Cli.csproj" />
+  <Project Path="src/Md2Pdf.Explorer/Md2Pdf.Explorer.csproj" />
+  <Project Path="tests/Md2Pdf.FakeBrowser/Md2Pdf.FakeBrowser.csproj" />
+  <Project Path="tests/Md2Pdf.Tests/Md2Pdf.Tests.csproj" />
+</Solution>

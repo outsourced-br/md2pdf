@@ -1,0 +1,239 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.204
+
+      - run: dotnet test Md2Pdf.slnx -c Release
+
+      - name: Publish Windows Native AOT
+        shell: pwsh
+        run: |
+          $releaseVersion = '${{ github.ref_name }}'.TrimStart('v')
+          dotnet publish src/Md2Pdf.Cli/Md2Pdf.Cli.csproj -c Release -r win-x64 -o publish -p:Version=$releaseVersion
+          dotnet publish src/Md2Pdf.Explorer/Md2Pdf.Explorer.csproj -c Release -r win-x64 -o publish -p:Version=$releaseVersion
+          $version = & ./publish/md2pdf.exe --version
+          if ($version.Trim() -ne $releaseVersion) {
+            throw "Binary version $version does not match tag ${{ github.ref_name }}."
+          }
+          foreach ($name in @('md2pdf.exe', 'md2pdf-explorer.exe')) {
+            $bytes = [IO.File]::ReadAllBytes((Join-Path publish $name))
+            $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+            if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a -or
+                $ascii -match 'coreclr\.dll|hostfxr\.dll') {
+              throw "$name failed the Windows Native-AOT identity gate."
+            }
+          }
+          $smoke = Join-Path $env:RUNNER_TEMP 'md2pdf-release-smoke'
+          New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+          Copy-Item tests/fixtures/acceptance.md,tests/fixtures/fixture-image.svg -Destination $smoke
+          & ./publish/md2pdf.exe convert (Join-Path $smoke 'acceptance.md') --json
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release conversion smoke test failed.' }
+          & ./publish/md2pdf.exe convert (Join-Path $smoke 'acceptance.md') --collision counter --json
+          if ($LASTEXITCODE -ne 0 -or
+              -not (Test-Path -LiteralPath (Join-Path $smoke 'acceptance_0001.pdf'))) {
+            throw 'Windows release counter smoke test failed.'
+          }
+          Remove-Item publish/*.pdb -Force
+          Copy-Item LICENSE,THIRD_PARTY_NOTICES.md,README.md,Convert-MarkdownToPdf.ps1 -Destination publish
+
+          $installerSource = Join-Path $env:RUNNER_TEMP 'md2pdf-installer-source'
+          New-Item -ItemType Directory -Force -Path $installerSource | Out-Null
+          $assetName = "md2pdf-$releaseVersion-win-x64.zip"
+          $asset = Join-Path $installerSource $assetName
+          Compress-Archive -Path publish/* -DestinationPath $asset
+          $hash = (Get-FileHash -Algorithm SHA256 $asset).Hash.ToLowerInvariant()
+          "$hash  $assetName" | Set-Content (
+            Join-Path $installerSource 'SHA256SUMS') -Encoding ascii
+          $env:MD2PDF_INSTALL_ROOT = Join-Path $env:RUNNER_TEMP 'installed\md2pdf'
+          $env:MD2PDF_INSTALL_NO_PATH_UPDATE = '1'
+          $installer = [scriptblock]::Create((Get-Content -Raw install.ps1))
+          & $installer --cli --source $installerSource
+          if ($LASTEXITCODE -ne 0) { throw 'Windows archive installer smoke test failed.' }
+          & (Join-Path $env:MD2PDF_INSTALL_ROOT 'md2pdf.exe') --version
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Windows archive did not run.' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-payload
+          path: publish/
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.204
+
+      - run: dotnet test Md2Pdf.slnx -c Release
+
+      - name: Publish Linux Native AOT
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish src/Md2Pdf.Cli/Md2Pdf.Cli.csproj -c Release -r linux-x64 \
+            -o publish -p:Version="${GITHUB_REF_NAME#v}"
+          test "$(./publish/md2pdf --version)" = "${GITHUB_REF_NAME#v}"
+          file publish/md2pdf | grep -E 'ELF 64-bit.*x86-64'
+          ! strings publish/md2pdf | grep -Eq 'libcoreclr\.so|hostfxr\.so'
+          ! ldd publish/md2pdf | grep -Eq 'coreclr|hostfxr'
+          chmod 0755 publish/md2pdf
+          smoke="$RUNNER_TEMP/md2pdf-release-smoke"
+          mkdir -p "$smoke"
+          cp tests/fixtures/acceptance.md tests/fixtures/fixture-image.svg "$smoke/"
+          ./publish/md2pdf convert "$smoke/acceptance.md" --json
+          ./publish/md2pdf convert "$smoke/acceptance.md" --collision counter --json
+          test -f "$smoke/acceptance_0001.pdf"
+          rm -f publish/*.dbg
+          cp LICENSE THIRD_PARTY_NOTICES.md README.md publish/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-payload
+          path: publish/
+          if-no-files-found: error
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-payload
+          path: payload/win-x64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-payload
+          path: payload/linux-x64
+
+      - name: Assemble archives from tracked skill sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p release staging/md2pdf/bin/win-x64 staging/md2pdf/bin/linux-x64
+          chmod 0755 payload/linux-x64/md2pdf
+
+          (
+            cd payload/win-x64
+            zip -q -9 -r "../../release/md2pdf-$version-win-x64.zip" .
+          )
+          (
+            cd payload/linux-x64
+            tar -czf "../../release/md2pdf-$version-linux-x64.tar.gz" .
+          )
+
+          cp -R skills/md2pdf/. staging/md2pdf/
+          cp payload/win-x64/md2pdf.exe staging/md2pdf/bin/win-x64/
+          cp payload/linux-x64/md2pdf staging/md2pdf/bin/linux-x64/
+          chmod 0755 staging/md2pdf/scripts/md2pdf.sh staging/md2pdf/bin/linux-x64/md2pdf
+          test -f staging/md2pdf/SKILL.md
+          test -f staging/md2pdf/agents/openai.yaml
+          test -x staging/md2pdf/bin/linux-x64/md2pdf
+          test -f staging/md2pdf/bin/win-x64/md2pdf.exe
+          (
+            cd staging
+            zip -q -9 -r "../release/md2pdf-skill-$version.zip" md2pdf
+          )
+          cp THIRD_PARTY_NOTICES.md LICENSE release/
+
+      - name: Generate Windows SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: payload/win-x64
+          format: spdx-json
+          output-file: release/md2pdf-win-x64.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate Linux SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: payload/linux-x64
+          format: spdx-json
+          output-file: release/md2pdf-linux-x64.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Hash and validate archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum \
+            "md2pdf-${GITHUB_REF_NAME#v}-win-x64.zip" \
+            "md2pdf-${GITHUB_REF_NAME#v}-linux-x64.tar.gz" \
+            "md2pdf-skill-${GITHUB_REF_NAME#v}.zip" \
+            md2pdf-win-x64.spdx.json \
+            md2pdf-linux-x64.spdx.json \
+            THIRD_PARTY_NOTICES.md \
+            LICENSE > SHA256SUMS
+          sha256sum -c SHA256SUMS
+
+      - name: Attest release artifacts and SBOMs
+        uses: actions/attest@v4
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Install and smoke-test Linux archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_home=$(mktemp -d "$RUNNER_TEMP/md2pdf-install.XXXXXX")
+          cleanup() {
+            case "$install_home" in
+              "$RUNNER_TEMP"/md2pdf-install.*) rm -rf -- "$install_home" ;;
+              *) echo "Unsafe installer cleanup target: $install_home" >&2 ;;
+            esac
+          }
+          trap cleanup EXIT HUP INT TERM
+          HOME="$install_home" \
+            CODEX_HOME="$install_home/.codex" \
+            CLAUDE_CONFIG_DIR="$install_home/.claude" \
+            bash install.sh --all --source release
+          test "$(env -u DOTNET_ROOT PATH=/usr/bin:/bin \
+            "$install_home/.local/bin/md2pdf" --version)" = "${GITHUB_REF_NAME#v}"
+          mkdir -p "$install_home/fixture"
+          cp tests/fixtures/acceptance.md tests/fixtures/fixture-image.svg \
+            "$install_home/fixture/"
+          "$install_home/.local/bin/md2pdf" convert \
+            "$install_home/fixture/acceptance.md" --json
+          "$install_home/.codex/skills/md2pdf/scripts/md2pdf.sh" convert \
+            "$install_home/fixture/acceptance.md" --collision counter
+          test -f "$install_home/fixture/acceptance_0001.pdf"
+
+      - name: Publish public GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "MD2PDF ${GITHUB_REF_NAME#v}" \
+            --generate-notes

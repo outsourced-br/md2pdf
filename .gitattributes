@@ -1,0 +1,9 @@
+* text=auto
+*.cs text eol=lf
+*.csproj text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+skills/md2pdf/bin/linux-x64/md2pdf binary
+skills/md2pdf/bin/win-x64/md2pdf.exe binary

@@ -1,0 +1,15 @@
+.vs/
+.idea/
+**/bin/
+**/obj/
+artifacts/
+dist/
+tmp/
+TestResults/
+*.user
+*.pdb
+*.dbg
+
+# The portable skill deliberately tracks its release binaries.
+!skills/md2pdf/bin/
+!skills/md2pdf/bin/**

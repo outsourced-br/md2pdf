@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.204
+
+      - name: Test
+        run: dotnet test Md2Pdf.slnx -c Release
+
+      - name: Publish Native AOT
+        shell: pwsh
+        run: |
+          dotnet publish src/Md2Pdf.Cli/Md2Pdf.Cli.csproj -c Release -r win-x64 -o artifacts/win-x64
+          dotnet publish src/Md2Pdf.Explorer/Md2Pdf.Explorer.csproj -c Release -r win-x64 -o artifacts/win-x64
+
+      - name: Verify native executable identity
+        shell: pwsh
+        run: |
+          $cli = (Resolve-Path artifacts/win-x64/md2pdf.exe).Path
+          $helper = (Resolve-Path artifacts/win-x64/md2pdf-explorer.exe).Path
+          foreach ($binary in @($cli, $helper)) {
+            $bytes = [IO.File]::ReadAllBytes($binary)
+            if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+              throw "$binary is not a Windows PE executable."
+            }
+            $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+            if ($ascii -match 'coreclr\.dll|hostfxr\.dll') {
+              throw "$binary contains managed-runtime loader markers."
+            }
+          }
+          $savedPath = $env:PATH
+          $savedDotnet = $env:DOTNET_ROOT
+          try {
+            $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+            $env:DOTNET_ROOT = ''
+            $reported = & $cli --version
+            if ($LASTEXITCODE -ne 0 -or $reported.Trim() -ne '0.1.0') {
+              throw 'Native CLI failed its clean-PATH version probe.'
+            }
+          } finally {
+            $env:PATH = $savedPath
+            $env:DOTNET_ROOT = $savedDotnet
+          }
+
+      - name: Convert fixture and verify Explorer contract
+        shell: pwsh
+        run: |
+          choco install poppler -y --no-progress
+          $cli = (Resolve-Path artifacts/win-x64/md2pdf.exe).Path
+          $helper = (Resolve-Path artifacts/win-x64/md2pdf-explorer.exe).Path
+          $fixture = Join-Path $env:RUNNER_TEMP 'md2pdf explorer fixture'
+          New-Item -ItemType Directory -Force -Path $fixture | Out-Null
+          Copy-Item tests/fixtures/acceptance.md,tests/fixtures/fixture-image.svg -Destination $fixture
+          $markdown = Join-Path $fixture 'acceptance.md'
+          $json = & $cli convert $markdown --keep-html --json
+          if ($LASTEXITCODE -ne 0) { throw "Conversion failed: $json" }
+          $result = $json | ConvertFrom-Json
+          if (-not $result.success -or -not (Test-Path -LiteralPath $result.output)) {
+            throw 'Conversion JSON did not identify a created PDF.'
+          }
+          $header = [Text.Encoding]::ASCII.GetString(
+            [IO.File]::ReadAllBytes($result.output), 0, 5)
+          if ($header -ne '%PDF-') { throw 'Output has no PDF header.' }
+          $text = & pdftotext.exe $result.output -
+          if (($text -join "`n") -notmatch 'MD2PDF Acceptance Fixture') {
+            throw 'Expected text was not extractable from the PDF.'
+          }
+
+          New-Item -Path 'HKCU:\Software\Classes\.md' -Force | Out-Null
+          Set-Item -Path 'HKCU:\Software\Classes\.md' -Value 'MD2PDF.Test.Association'
+          & $cli explorer install
+          if ($LASTEXITCODE -ne 0) { throw 'Explorer install failed.' }
+          $verb = Get-ItemProperty 'HKCU:\Software\Classes\SystemFileAssociations\.md\shell\md2pdf'
+          $command = (Get-Item 'HKCU:\Software\Classes\SystemFileAssociations\.md\shell\md2pdf\command').GetValue('')
+          if ($verb.MUIVerb -ne 'Convert Markdown to PDF' -or
+              $verb.MultiSelectModel -ne 'Single' -or
+              $command -ne "`"$helper`" `"%1`"") {
+            throw 'Explorer verb does not match the public contract.'
+          }
+
+          $successOutput = & $helper $markdown
+          if ($LASTEXITCODE -ne 0 -or $successOutput) {
+            throw 'Explorer helper was not silent on success.'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $fixture 'acceptance_0001.pdf'))) {
+            throw 'Explorer counter conversion did not create _0001.'
+          }
+
+          $env:MD2PDF_BROWSER = Join-Path $fixture 'missing browser.exe'
+          $env:MD2PDF_EXPLORER_NO_DIALOG = '1'
+          & $helper $markdown
+          if ($LASTEXITCODE -eq 0) { throw 'Explorer helper unexpectedly succeeded.' }
+          $log = Join-Path $env:LOCALAPPDATA 'md2pdf\logs\explorer.log'
+          if (-not (Test-Path -LiteralPath $log)) { throw 'Explorer failure was not logged.' }
+          $logText = Get-Content -Raw -LiteralPath $log
+          if ($logText -notmatch 'CLI exited with code 3' -or
+              $logText -match 'Unicode survives') {
+            throw 'Explorer log is missing diagnostics or contains Markdown content.'
+          }
+          Remove-Item Env:MD2PDF_BROWSER,Env:MD2PDF_EXPLORER_NO_DIALOG
+
+          & $cli explorer remove
+          if ($LASTEXITCODE -ne 0) { throw 'Explorer removal failed.' }
+          if ((Get-Item 'HKCU:\Software\Classes\.md').GetValue('') -ne
+              'MD2PDF.Test.Association') {
+            throw 'Explorer integration disturbed the .md association.'
+          }
+          Remove-Item 'HKCU:\Software\Classes\.md' -Recurse -Force
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.204
+
+      - name: Test
+        run: dotnet test Md2Pdf.slnx -c Release
+
+      - name: Publish Native AOT
+        run: dotnet publish src/Md2Pdf.Cli/Md2Pdf.Cli.csproj -c Release -r linux-x64 -o artifacts/linux-x64
+
+      - name: Verify native executable identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          file artifacts/linux-x64/md2pdf | grep -E 'ELF 64-bit.*x86-64'
+          if strings artifacts/linux-x64/md2pdf | grep -Eq 'libcoreclr\.so|hostfxr\.so'; then
+            echo 'Managed-runtime loader marker found.' >&2
+            exit 1
+          fi
+          if ldd artifacts/linux-x64/md2pdf | grep -Eq 'coreclr|hostfxr'; then
+            echo 'Native binary links to a managed runtime.' >&2
+            exit 1
+          fi
+          reported=$(env -u DOTNET_ROOT PATH=/usr/bin:/bin ./artifacts/linux-x64/md2pdf --version)
+          test "$reported" = '0.1.0'
+
+      - name: Convert and inspect fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/md2pdf-acceptance.pdf"
+          html="$RUNNER_TEMP/md2pdf-acceptance.html"
+          ./artifacts/linux-x64/md2pdf convert tests/fixtures/acceptance.md \
+            --output "$output" --keep-html --json > "$RUNNER_TEMP/result.json"
+          test "$(head -c 5 "$output")" = '%PDF-'
+          tail -c 4096 "$output" | grep -q '%%EOF'
+          grep -q 'data:image/svg+xml;base64' "$html"
+          ! grep -Eqi '<script|<link|@import|url\\(http' "$html"
+          pdftotext "$output" - | grep -q 'MD2PDF Acceptance Fixture'

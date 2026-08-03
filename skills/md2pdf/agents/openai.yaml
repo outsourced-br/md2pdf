@@ -1,0 +1,4 @@
+interface:
+  display_name: "MD2PDF"
+  short_description: "Convert Markdown files to polished PDF"
+  default_prompt: "Use $md2pdf to convert this Markdown file into a polished PDF."

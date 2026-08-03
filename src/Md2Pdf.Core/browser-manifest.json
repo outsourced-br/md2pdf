@@ -1,0 +1,17 @@
+{
+  "version": "151.0.7922.71",
+  "platforms": [
+    {
+      "rid": "win-x64",
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.71/win64/chrome-headless-shell-win64.zip",
+      "sha256": "6e48a9cd964aa5fb80c9a02a677d9b810a53bbcf6d747959e8f0a9c09a3891b2",
+      "executable": "chrome-headless-shell-win64/chrome-headless-shell.exe"
+    },
+    {
+      "rid": "linux-x64",
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.71/linux64/chrome-headless-shell-linux64.zip",
+      "sha256": "7dd9d23b46fa7a9bfa26f1af96f413e0514c32698f6a43a57e1ade48d88a6578",
+      "executable": "chrome-headless-shell-linux64/chrome-headless-shell"
+    }
+  ]
+}
