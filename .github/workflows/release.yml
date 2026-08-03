@@ -101,7 +101,7 @@ jobs:
           ./publish/md2pdf convert "$smoke/acceptance.md" --json
           ./publish/md2pdf convert "$smoke/acceptance.md" --collision counter --json
           test -f "$smoke/acceptance_0001.pdf"
-          rm -f publish/*.dbg
+          rm -f publish/*.dbg publish/*.pdb
           cp LICENSE THIRD_PARTY_NOTICES.md README.md publish/
 
       - uses: actions/upload-artifact@v4
