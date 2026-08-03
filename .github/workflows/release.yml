@@ -12,9 +12,9 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.204
 
@@ -67,7 +67,7 @@ jobs:
           & (Join-Path $env:MD2PDF_INSTALL_ROOT 'md2pdf.exe') --version
           if ($LASTEXITCODE -ne 0) { throw 'Installed Windows archive did not run.' }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-payload
           path: publish/
@@ -76,9 +76,9 @@ jobs:
   linux:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.204
 
@@ -104,7 +104,7 @@ jobs:
           rm -f publish/*.dbg publish/*.pdb
           cp LICENSE THIRD_PARTY_NOTICES.md README.md publish/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-payload
           path: publish/
@@ -119,14 +119,14 @@ jobs:
       contents: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows-payload
           path: payload/win-x64
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-payload
           path: payload/linux-x64
