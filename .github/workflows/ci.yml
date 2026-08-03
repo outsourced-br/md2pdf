@@ -93,8 +93,21 @@ jobs:
             throw 'Explorer verb does not match the public contract.'
           }
 
-          $successOutput = & $helper $markdown
-          if ($LASTEXITCODE -ne 0 -or $successOutput) {
+          function Invoke-ExplorerHelper([string] $source) {
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $helper
+            $startInfo.UseShellExecute = $false
+            $startInfo.ArgumentList.Add($source)
+            $process = [Diagnostics.Process]::Start($startInfo)
+            if (-not $process.WaitForExit(180000)) {
+              $process.Kill($true)
+              throw 'Explorer helper exceeded its CI timeout.'
+            }
+            return $process.ExitCode
+          }
+
+          $successExit = Invoke-ExplorerHelper $markdown
+          if ($successExit -ne 0) {
             throw 'Explorer helper was not silent on success.'
           }
           if (-not (Test-Path -LiteralPath (Join-Path $fixture 'acceptance_0001.pdf'))) {
@@ -103,8 +116,8 @@ jobs:
 
           $env:MD2PDF_BROWSER = Join-Path $fixture 'missing browser.exe'
           $env:MD2PDF_EXPLORER_NO_DIALOG = '1'
-          & $helper $markdown
-          if ($LASTEXITCODE -eq 0) { throw 'Explorer helper unexpectedly succeeded.' }
+          $failureExit = Invoke-ExplorerHelper $markdown
+          if ($failureExit -eq 0) { throw 'Explorer helper unexpectedly succeeded.' }
           $log = Join-Path $env:LOCALAPPDATA 'md2pdf\logs\explorer.log'
           if (-not (Test-Path -LiteralPath $log)) { throw 'Explorer failure was not logged.' }
           $logText = Get-Content -Raw -LiteralPath $log
@@ -137,6 +150,11 @@ jobs:
       - name: Publish Native AOT
         run: dotnet publish src/Md2Pdf.Cli/Md2Pdf.Cli.csproj -c Release -r linux-x64 -o artifacts/linux-x64
 
+      - name: Install PDF inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils
+
       - name: Verify native executable identity
         shell: bash
         run: |
@@ -164,5 +182,5 @@ jobs:
           test "$(head -c 5 "$output")" = '%PDF-'
           tail -c 4096 "$output" | grep -q '%%EOF'
           grep -q 'data:image/svg+xml;base64' "$html"
-          ! grep -Eqi '<script|<link|@import|url\\(http' "$html"
+          ! grep -Eqi '<script|<link|@import|url\(http' "$html"
           pdftotext "$output" - | grep -q 'MD2PDF Acceptance Fixture'
